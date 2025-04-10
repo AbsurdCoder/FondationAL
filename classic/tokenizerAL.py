@@ -156,6 +156,7 @@ class BPETokenizer(BaseTokenizer):
     """A Byte-Pair Encoding (BPE) tokenizer implementation."""
     
     def __init__(self, vocab_size: int = 1000):
+        logging.info("0 - Initializing BPE")
         super().__init__(vocab_size)
         self.merges: List[Tuple[str, str]] = []
         
@@ -172,28 +173,30 @@ class BPETokenizer(BaseTokenizer):
                 idx = len(self.token_to_id)
                 self.token_to_id[char] = idx
                 self.id_to_token[idx] = char
+        logging.info(f"1.5 - {self.token_to_id}")
+        
     
-    def train(self, texts: List[str], min_frequency: int = 2, 
-              num_iterations: Optional[int] = None) -> None:
+    def train(self, texts: List[str], min_frequency: int = 2, num_iterations: Optional[int] = None) -> None:
         """Train BPE tokenizer on texts."""
         # Start with character vocabulary
+        logging.info("1 - Getting base vocabs")
         self.get_base_vocab(texts)
         
-        # Convert texts to lists of characters (tokens)
         word_freqs = Counter()
         for text in texts:
             word_freqs[" ".join(list(text))] += 1
+        logging.info("2 - Convert texts to lists of characters (tokens)")
         
-        # Determine number of merges to perform
         if num_iterations is None:
             num_iterations = self.vocab_size - len(self.token_to_id)
-        
-        logging.info(f"Training BPE tokenizer with {num_iterations} merges")
+
+        logging.info(f"3 - Training BPE tokenizer with {num_iterations} merges")
         
         # Perform BPE training
         for i in tqdm(range(num_iterations)):
             # Find the most frequent pair
             pairs = Counter()
+
             for word, freq in word_freqs.items():
                 if freq < min_frequency:
                     continue
@@ -231,6 +234,7 @@ class BPETokenizer(BaseTokenizer):
                 break
         
         logging.info(f"BPE training complete. Vocabulary size: {len(self.token_to_id)}")
+        logging.info(f"Vocabulary: {self.token_to_id}")
     
     def encode(self, text: str) -> List[int]:
         """Convert text to token IDs using BPE encoding."""
@@ -264,14 +268,8 @@ class BPETokenizer(BaseTokenizer):
         return "".join(tokens)
 
 
-bpe = BPETokenizer(vocab_size=10)
-bpe.train(["low", "lower", "newest", "widest"])
+logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+    )
 
-l = []
-for word in ["lower", "widest"]:
-    l.append(bpe.encode(word))
-    print(f"{word} → {bpe.encode(word)}")
-
-print(l)
-for i in l:
-    print(f"Token {i} -> {bpe.decode(i)}")
