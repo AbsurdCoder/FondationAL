@@ -1,4 +1,4 @@
-from classic.bytepairencoding import BPE
+from classic.tokenizerAL import BPETokenizer as BPE
 
 
 corpus = [
@@ -10,12 +10,10 @@ corpus = [
 bpe = BPE(vocab_size=100)
 bpe.train(corpus)
 
-print("Learned rule")
-for pair in bpe.bpe_codes:
-    print(pair)
 
 
 # Encode a new sentence
 sentence = "the quick dog jumps high"
 tokens = bpe.encode(sentence)
 print("BPE Tokens:", tokens)
+print("BPE Decoded:", bpe.decode(tokens))
