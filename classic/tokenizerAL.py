@@ -151,7 +151,6 @@ class BaseTokenizer:
         return len(self.token_to_id)
 
 
-
 class BPETokenizer(BaseTokenizer):
     """A Byte-Pair Encoding (BPE) tokenizer implementation."""
     
