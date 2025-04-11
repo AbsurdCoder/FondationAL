@@ -1,3 +1,54 @@
+"""
+Foundation Language Model Training Workflow 
+
+This document outlines the complete workflow for training a small foundation language model 
+using a custom tokenizer. The process follows these key stages:
+
+1. DATA PREPARATION
+   - Load raw text data from files or datasets
+   - Clean and preprocess text (remove irrelevant content, normalize text, handle special characters)
+   - Split data into training and validation sets
+
+2. CUSTOM TOKENIZER CREATION
+   - Implement tokenizer variants (Character, BPE, WordPiece)
+   - Train the selected tokenizer on corpus data:
+     * For BPE: Find most frequent character pairs and merge iteratively
+     * For Character: Create vocabulary from all unique characters
+     * For WordPiece: Build vocabulary based on likelihood scoring
+   - Save tokenizer for reuse during model training and inference
+   - Implement encode/decode methods for text conversion
+
+3. MODEL CONFIGURATION
+   - Define architecture parameters (embedding size, layers, attention heads)
+   - Set up training hyperparameters (learning rate, batch size, epochs)
+   - Configure model with custom tokenizer vocabulary size
+   - Initialize model weights appropriately
+
+4. DATASET PREPARATION
+   - Tokenize text data using the custom tokenizer
+   - Create sequence batches of appropriate length
+   - Set up data loaders with efficient batching
+   - Apply necessary padding and masking
+
+5. TRAINING PROCESS
+   - Initialize optimizer and learning rate scheduler
+   - Set up training loop with gradient computation and updates
+   - Implement validation checking at regular intervals
+   - Track and log relevant metrics (loss, perplexity)
+   - Save model checkpoints periodically
+   - Apply early stopping based on validation performance
+
+6. EVALUATION
+   - Compute metrics on held-out test data
+   - Generate text samples to assess qualitative performance
+   - Compare with baseline models or different tokenizer configurations
+
+7. DEPLOYMENT AND USAGE
+   - Package model with its custom tokenizer
+   - Create inference utilities for text generation
+   - Document tokenizer characteristics for proper usage
+"""
+
 import os
 import logging
 import torch
@@ -11,6 +62,7 @@ from typing import List, Dict, Any, Optional, Union, Tuple
 import wandb
 import json
 from pathlib import Path
+from classic.tokenizerAL import BPETokenizer
 
 class LLMConfig:
     """Configuration class for the LLM training process."""
@@ -37,6 +89,7 @@ class LLMConfig:
         use_wandb: bool = False,
         data_path: str = None,
         tokenizer_path: str = None,
+        tokenizer_type: str = None,
         pretrained_model_path: str = None,
         fp16: bool = False,
         device: str = None
@@ -61,6 +114,7 @@ class LLMConfig:
         self.use_wandb = use_wandb
         self.data_path = data_path
         self.tokenizer_path = tokenizer_path
+        self.tokenizer_type = tokenizer_type
         self.pretrained_model_path = pretrained_model_path
         self.fp16 = fp16
         
@@ -90,8 +144,23 @@ class TextDatasetHandler:
     
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.tokenizer = None
+        self.tokenizer = BPETokenizer(vocab_size=1000)
+        self.train_tokenizer_if_needed()
     
+    def train_tokenizer_if_needed(self):
+        """Train tokenizer if it doesn't have merges yet"""
+        if not hasattr(self.tokenizer, 'merges') or not self.tokenizer.merges:
+            # Load some data for tokenizer training
+            dataset = self.load_dataset("train")
+            # Take a subset for tokenizer training
+            texts = dataset["text"][:10000] if len(dataset) > 10000 else dataset["text"]
+            # Train the tokenizer
+            self.tokenizer.train(texts)
+            # Save the trained tokenizer
+            os.makedirs("tokenizers", exist_ok=True)
+            self.tokenizer.save("tokenizers/custom_bpe_tokenizer.pkl")
+            print("Tokenizer trained and saved.")
+
     def load_dataset(self, split: str = "train") -> Dataset:
         """Load dataset from local or HuggingFace's datasets."""
         if self.config.data_path and os.path.exists(self.config.data_path):
@@ -105,7 +174,6 @@ class TextDatasetHandler:
         else:
             # Use a small subset of a public dataset for POC
             dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
-            
         return dataset
     
     def _load_text_file(self, file_path: str) -> Dataset:
@@ -118,18 +186,40 @@ class TextDatasetHandler:
     def tokenize_function(self, examples: Dict[str, List]) -> Dict[str, List]:
         """Tokenize examples and prepare them for model input."""
         # Assuming examples have a 'text' field
-        tokenized = self.tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=self.config.max_seq_length,
-            padding="max_length",
-            return_tensors="pt"
-        )
+        input_ids_list = []
+        attention_mask_list = []
+        
+        for text in examples["text"]:
+            # Encode text using our custom tokenizer
+            input_ids = self.tokenizer.encode(text)
+            
+            # Handle truncation
+            if len(input_ids) > self.config.max_seq_length:
+                input_ids = input_ids[:self.config.max_seq_length]
+            
+            # Create attention mask (1 for tokens, 0 for padding)
+            attention_mask = [1] * len(input_ids)
+            
+            # Handle padding
+            padding_length = self.config.max_seq_length - len(input_ids)
+            if padding_length > 0:
+                # Assuming 0 is the padding token id
+                input_ids = input_ids + [0] * padding_length
+                attention_mask = attention_mask + [0] * padding_length
+            
+            input_ids_list.append(input_ids)
+            attention_mask_list.append(attention_mask)
+        
+        # Convert lists to tensors
+        result = {
+            "input_ids": torch.tensor(input_ids_list),
+            "attention_mask": torch.tensor(attention_mask_list)
+        }
         
         # For causal language modeling, we need input_ids and labels
-        tokenized["labels"] = tokenized["input_ids"].clone()
+        result["labels"] = result["input_ids"].clone()
         
-        return tokenized
+        return result
     
     def prepare_dataloaders(self) -> Tuple[DataLoader, Optional[DataLoader]]:
         """Prepare train and validation dataloaders."""
@@ -186,45 +276,29 @@ class TextDatasetHandler:
         return train_dataloader, val_dataloader
 
 
-class LLMTrainer:
-    """Main class to orchestrate the training process."""
-    
-    def __init__(self, config_path: str = None, **kwargs):
-        """Initialize with either a config file or parameters."""
-        if config_path:
-            self.config = LLMConfig.from_json(config_path)
-        else:
-            self.config = LLMConfig(**kwargs)
-        
-        # Set up logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(f"{self.config.output_dir}/training.log"),
-                logging.StreamHandler()
-            ]
-        )
-        
-        # Create model manager
-        self.model_manager = ModelManager(self.config)
-    
-    def train(self) -> None:
-        """Train the model."""
-        self.model_manager.train()
-    
-    def save_config(self, path: str = None) -> None:
-        """Save configuration to file."""
-        if not path:
-            path = os.path.join(self.config.output_dir, "config.json")
-        self.config.to_json(path)
-    
-    def generate_sample(self, prompt: str, max_length: int = 100, temperature: float = 1.0) -> str:
-        """Generate a text sample using the trained model."""
-        return self.model_manager.generate_text(prompt, max_length, temperature)
-    
-    def load_model(self, model_path: str) -> None:
-        """Load a pre-trained model."""
-        self.config.pretrained_model_path = model_path
-        self.model_manager.initialize_model()
 
+if __name__ == "__main__":
+    # Create a configuration for a tiny model suitable for limited computing resources
+    configo = LLMConfig(
+        model_name="tiny-gpt",
+        tokenizer_type="bpe",
+        n_positions=512,  # Reduced context length
+        n_embd=384,       # Reduced embedding dimension
+        n_layer=6,        # Fewer layers
+        n_head=6,         # Fewer attention heads
+        batch_size=4,     # Small batch size for limited VRAM
+        learning_rate=5e-5,
+        epochs=3,
+        max_seq_length=512,
+        output_dir="./tiny_model_output",
+        logging_steps=10,
+        save_steps=500,
+        # Using a small subset of wikitext for quick training
+        data_path=None,  # will use wikitext-2-raw-v1 by default
+        fp16=True        # Use mixed precision if available
+    )
+    
+
+data_handler = TextDatasetHandler(configo)
+print(data_handler.load_dataset())
+print(data_handler.prepare_dataloaders())
