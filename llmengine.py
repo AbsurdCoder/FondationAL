@@ -301,4 +301,4 @@ if __name__ == "__main__":
 
 data_handler = TextDatasetHandler(configo)
 print(data_handler.load_dataset())
-print(data_handler.prepare_dataloaders())
+data_handler.prepare_dataloaders()
